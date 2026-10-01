@@ -13,6 +13,9 @@
 #include <stdint.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <winhttp.h>
+
+#pragma comment(lib, "winhttp.lib")
 
 #define PATH_CAP 4096
 #define LINE_CAP 65536
@@ -48,6 +51,9 @@ static SessionStats g_session;
 static RateStats g_rates;
 static int g_have_session;
 
+enum { API_PENDING, API_OK, API_NO_CREDS, API_AUTH, API_NET };
+static volatile LONG g_api_state = API_PENDING;
+
 static HFONT g_font_title;
 static HFONT g_font_header;
 static HFONT g_font_body;
@@ -71,6 +77,59 @@ static int make_dir_recursive(const char *path) {
         }
     }
     return CreateDirectoryA(tmp, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+static int get_status_dir(char *out, size_t cap) {
+    char local[PATH_CAP];
+    if (!get_env_path("LOCALAPPDATA", local, sizeof(local))) return 0;
+    snprintf(out, cap, "%s\\ClaudeUsageMonitor", local);
+    return 1;
+}
+
+/* Reads a whole file into a NUL-terminated malloc'd buffer. Shares delete access
+   so a concurrent atomic replace by the bridge is never blocked. */
+static char *read_file_all(const char *path, size_t max_size, size_t *out_len) {
+    HANDLE h;
+    LARGE_INTEGER size;
+    DWORD got = 0;
+    char *data;
+
+    h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0 || (unsigned long long)size.QuadPart > max_size) {
+        CloseHandle(h);
+        return NULL;
+    }
+    data = (char*)malloc((size_t)size.QuadPart + 1);
+    if (!data) { CloseHandle(h); return NULL; }
+    if (!ReadFile(h, data, (DWORD)size.QuadPart, &got, NULL) || got != (DWORD)size.QuadPart) {
+        free(data); CloseHandle(h); return NULL;
+    }
+    CloseHandle(h);
+    data[got] = '\0';
+    if (out_len) *out_len = got;
+    return data;
+}
+
+/* Writes to a temp file then renames over the target, so readers never see a partial file. */
+static int write_file_atomic(const char *path, const char *data, size_t len) {
+    char tmp[PATH_CAP];
+    FILE *f;
+    int i;
+
+    snprintf(tmp, sizeof(tmp), "%s.%lu.tmp", path, (unsigned long)GetCurrentProcessId());
+    f = fopen(tmp, "wb");
+    if (!f) return 0;
+    if (fwrite(data, 1, len, f) != len) { fclose(f); DeleteFileA(tmp); return 0; }
+    fclose(f);
+
+    for (i = 0; i < 50; ++i) {
+        if (MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return 1;
+        Sleep(10);
+    }
+    DeleteFileA(tmp);
+    return 0;
 }
 
 static int json_number_after(const char *p, const char *key, double *value) {
@@ -145,31 +204,17 @@ static void format_reset(time_t t, char *out, size_t cap) {
 }
 
 static int read_rate_file(RateStats *r) {
-    char local[PATH_CAP], path[PATH_CAP];
-    FILE *f;
-    long size;
+    char dir[PATH_CAP], path[PATH_CAP];
     char *data;
     char *p;
     double v;
 
     memset(r, 0, sizeof(*r));
-    if (!get_env_path("LOCALAPPDATA", local, sizeof(local))) return 0;
-    snprintf(path, sizeof(path), "%s\\ClaudeUsageMonitor\\status.json", local);
+    if (!get_status_dir(dir, sizeof(dir))) return 0;
+    snprintf(path, sizeof(path), "%s\\status.json", dir);
 
-    f = fopen(path, "rb");
-    if (!f) return 0;
-    fseek(f, 0, SEEK_END);
-    size = ftell(f);
-    if (size <= 0 || size > 2 * 1024 * 1024) { fclose(f); return 0; }
-    rewind(f);
-
-    data = (char*)malloc((size_t)size + 1);
-    if (!data) { fclose(f); return 0; }
-    if (fread(data, 1, (size_t)size, f) != (size_t)size) {
-        free(data); fclose(f); return 0;
-    }
-    data[size] = '\0';
-    fclose(f);
+    data = read_file_all(path, 2 * 1024 * 1024, NULL);
+    if (!data) return 0;
 
     p = strstr(data, "\"five_hour\"");
     if (p && json_number_after(p, "\"used_percentage\"", &v)) {
@@ -277,6 +322,10 @@ static int scan_session(const char *path, SessionStats *s) {
 static void refresh_data(void) {
     char latest[PATH_CAP];
     time_t latest_time = 0;
+    RateStats rates;
+
+    /* Keep the last good reading if the file is momentarily unavailable. */
+    if (read_rate_file(&rates)) g_rates = rates;
 
     latest[0] = '\0';
     if (!find_latest_jsonl_recursive(g_root, latest, sizeof(latest), &latest_time)) {
@@ -288,7 +337,6 @@ static void refresh_data(void) {
         return;
     }
     g_have_session = 1;
-    read_rate_file(&g_rates);
 }
 
 /* ---- Drawing ---- */
@@ -443,9 +491,15 @@ static int render(HDC hdc, RECT *client) {
         text_out(hdc, bar_x + bar_w + SX(8), y + SX(1), white, g_font_body, buf);
         y += SX(22);
     } else {
-        text_out(hdc, left + SX(8), y, dim, g_font_body, "Live 5-hour/7-day data not available yet.");
+        const char *l1 = "Fetching live 5-hour/7-day data...", *l2 = "";
+        switch (g_api_state) {
+        case API_NO_CREDS: l1 = "No Claude Code login found."; l2 = "Run 'claude' and log in with your plan."; break;
+        case API_AUTH:     l1 = "Claude Code login token expired."; l2 = "Run Claude Code once to refresh it."; break;
+        case API_NET:      l1 = "Can't reach api.anthropic.com."; l2 = "Retrying automatically."; break;
+        }
+        text_out(hdc, left + SX(8), y, dim, g_font_body, l1);
         y += SX(15);
-        text_out(hdc, left + SX(8), y, dim, g_font_body, "Configure Claude Code's statusLine to use /bridge.");
+        text_out(hdc, left + SX(8), y, dim, g_font_body, l2);
         y += SX(22);
     }
 
@@ -500,25 +554,364 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 static int bridge_mode(void) {
-    char local[PATH_CAP], dir[PATH_CAP], path[PATH_CAP];
-    FILE *f;
-    int c;
+    char dir[PATH_CAP], path[PATH_CAP];
+    char *data;
+    size_t len = 0, cap = 64 * 1024, n;
 
-    if (!get_env_path("LOCALAPPDATA", local, sizeof(local))) return 1;
-    snprintf(dir, sizeof(dir), "%s\\ClaudeUsageMonitor", local);
-    make_dir_recursive(dir);
-    snprintf(path, sizeof(path), "%s\\status.json", dir);
+    data = (char*)malloc(cap + 1);
+    if (!data) return 1;
+    while ((n = fread(data + len, 1, cap - len, stdin)) > 0) {
+        len += n;
+        if (len == cap) {
+            char *grown;
+            if (cap >= 8 * 1024 * 1024) break;
+            cap *= 2;
+            grown = (char*)realloc(data, cap + 1);
+            if (!grown) break;
+            data = grown;
+        }
+    }
+    data[len] = '\0';
 
-    f = fopen(path, "wb");
-    if (!f) return 1;
-
-    while ((c = getchar()) != EOF)
-        fputc(c, f);
-    fclose(f);
+    /* rate_limits only appears after the first API response of a session; don't
+       clobber good data from another session with a payload that lacks it. */
+    if (strstr(data, "\"rate_limits\"") && get_status_dir(dir, sizeof(dir))) {
+        make_dir_recursive(dir);
+        snprintf(path, sizeof(path), "%s\\status.json", dir);
+        write_file_atomic(path, data, len);
+    }
+    free(data);
 
     /* Claude Code expects status-line output; keep it unobtrusive. */
     printf("Usage monitor");
     return 0;
+}
+
+/* ---- statusLine auto-install ---- */
+
+
+static const char *json_skip_ws(const char *p) {
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    return p;
+}
+
+static const char *json_skip_string(const char *p) {
+    if (*p != '"') return NULL;
+    for (++p; *p; ++p) {
+        if (*p == '\\') { if (!*++p) return NULL; }
+        else if (*p == '"') return p + 1;
+    }
+    return NULL;
+}
+
+static const char *json_skip_value(const char *p) {
+    int depth = 0;
+    p = json_skip_ws(p);
+    if (*p == '"') return json_skip_string(p);
+    if (*p != '{' && *p != '[') {
+        while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' &&
+               *p != '\t' && *p != '\r' && *p != '\n') ++p;
+        return p;
+    }
+    while (*p) {
+        if (*p == '"') { p = json_skip_string(p); if (!p) return NULL; continue; }
+        if (*p == '{' || *p == '[') ++depth;
+        else if (*p == '}' || *p == ']') { if (--depth == 0) return p + 1; }
+        ++p;
+    }
+    return NULL;
+}
+
+/* Finds a top-level member's value. Returns 1 if found, 0 if absent, -1 if the document can't be parsed. */
+static int json_find_member(const char *doc, const char *key, const char **val_start, const char **val_end) {
+    size_t key_len = strlen(key);
+    const char *p = json_skip_ws(doc);
+
+    if (*p != '{') return -1;
+    p = json_skip_ws(p + 1);
+    if (*p == '}') return 0;
+    for (;;) {
+        const char *name = p, *name_end = json_skip_string(p), *v;
+        if (!name_end) return -1;
+        p = json_skip_ws(name_end);
+        if (*p != ':') return -1;
+        v = json_skip_ws(p + 1);
+        p = json_skip_value(v);
+        if (!p) return -1;
+        if ((size_t)(name_end - name) == key_len + 2 && !strncmp(name + 1, key, key_len)) {
+            *val_start = v;
+            *val_end = p;
+            return 1;
+        }
+        p = json_skip_ws(p);
+        if (*p == '}') return 0;
+        if (*p != ',') return -1;
+        p = json_skip_ws(p + 1);
+    }
+}
+
+/* Builds a status-line command that survives both Git Bash and PowerShell, which
+   is what Claude Code uses on Windows. Forward slashes stop bash from eating
+   backslashes; the 8.3 short path avoids quoting (a quoted path followed by an
+   argument is a PowerShell parse error); "--bridge" avoids MSYS rewriting "/bridge". */
+static int build_bridge_command(char *out, size_t cap) {
+    char exe[PATH_CAP], short_path[PATH_CAP];
+    const char *use = exe;
+    char *c;
+    DWORD n = GetModuleFileNameA(NULL, exe, sizeof(exe));
+
+    if (n == 0 || n >= sizeof(exe)) return 0;
+    n = GetShortPathNameA(exe, short_path, sizeof(short_path));
+    if (n > 0 && n < sizeof(short_path) && !strchr(short_path, ' ')) use = short_path;
+
+    if (strchr(use, ' ')) snprintf(out, cap, "\"%s\" --bridge", use);
+    else snprintf(out, cap, "%s --bridge", use);
+    for (c = out; *c; ++c) if (*c == '\\') *c = '/';
+    return 1;
+}
+
+static void json_escape(const char *in, char *out, size_t cap) {
+    size_t o = 0;
+    for (; *in && o + 2 < cap; ++in) {
+        if (*in == '"' || *in == '\\') out[o++] = '\\';
+        out[o++] = *in;
+    }
+    out[o] = '\0';
+}
+
+/* Points Claude Code's statusLine at this exe so status.json is produced automatically.
+   Replaces a previous (possibly broken) entry for this monitor, but never overwrites
+   a status line belonging to something else. */
+static void install_statusline(void) {
+    char user[PATH_CAP], path[PATH_CAP], backup[PATH_CAP];
+    char cmd[PATH_CAP], escaped[PATH_CAP * 2], value[PATH_CAP * 2 + 256];
+    char *doc, *out;
+    const char *vs, *ve;
+    size_t doc_len = 0, out_cap;
+    int found;
+
+    if (!get_env_path("USERPROFILE", user, sizeof(user))) return;
+    if (!build_bridge_command(cmd, sizeof(cmd))) return;
+    json_escape(cmd, escaped, sizeof(escaped));
+    snprintf(value, sizeof(value),
+        "{\n    \"type\": \"command\",\n    \"command\": \"%s\",\n    \"refreshInterval\": 5\n  }", escaped);
+
+    snprintf(path, sizeof(path), "%s\\.claude", user);
+    make_dir_recursive(path);
+    snprintf(path, sizeof(path), "%s\\.claude\\settings.json", user);
+
+    doc = read_file_all(path, 16 * 1024 * 1024, &doc_len);
+    if (!doc) {
+        if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return;
+        snprintf(escaped, sizeof(escaped), "{\n  \"statusLine\": %s\n}\n", value);
+        write_file_atomic(path, escaped, strlen(escaped));
+        return;
+    }
+
+    found = json_find_member(doc, "statusLine", &vs, &ve);
+    if (found < 0) { free(doc); return; }
+    if (found) {
+        size_t old_len = (size_t)(ve - vs);
+        int ours = 0;
+        char *old = (char*)malloc(old_len + 1);
+        if (old) {
+            memcpy(old, vs, old_len);
+            old[old_len] = '\0';
+            ours = strstr(old, "ClaudeUsageMonitor") || strstr(old, "--bridge");
+            free(old);
+        }
+        if (!ours) { free(doc); return; }
+        if (old_len == strlen(value) && !memcmp(vs, value, old_len)) { free(doc); return; }
+    }
+
+    out_cap = doc_len + strlen(value) + 64;
+    out = (char*)malloc(out_cap);
+    if (!out) { free(doc); return; }
+
+    if (found) {
+        snprintf(out, out_cap, "%.*s%s%s", (int)(vs - doc), doc, value, ve);
+    } else {
+        /* Insert as the last member of the top-level object. */
+        char *close = strrchr(doc, '}');
+        char *last = close;
+        if (!close) { free(out); free(doc); return; }
+        do { --last; } while (last > doc && (*last == ' ' || *last == '\t' || *last == '\r' || *last == '\n'));
+        snprintf(out, out_cap, "%.*s%s\n  \"statusLine\": %s\n%s",
+            (int)(last + 1 - doc), doc, *last == '{' ? "" : ",", value, close);
+    }
+
+    snprintf(backup, sizeof(backup), "%s.bak", path);
+    CopyFileA(path, backup, FALSE);
+    write_file_atomic(path, out, strlen(out));
+    free(out);
+    free(doc);
+}
+
+/* ---- Live usage poller ----
+   Claude Code's status line only runs in the interactive terminal UI, not when it
+   is hosted headless (IDE extensions, --print). So the monitor also asks the same
+   endpoint Claude Code's /usage command uses, with Claude Code's own OAuth login,
+   and writes the result to status.json in the status-line format. */
+
+#define USAGE_POLL_MS     30000
+#define USAGE_BACKOFF_MAX 300000
+
+/* "2026-10-01T22:40:00.257300+00:00" -> Unix epoch seconds. */
+static time_t parse_iso8601(const char *s) {
+    struct tm tm;
+    const char *p;
+    time_t t;
+
+    memset(&tm, 0, sizeof(tm));
+    if (sscanf(s, "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+               &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) return 0;
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    t = _mkgmtime(&tm);
+    if (t == (time_t)-1) return 0;
+
+    p = s + 19;
+    if (*p == '.') while (*++p >= '0' && *p <= '9') {}
+    if (*p == '+' || *p == '-') {
+        int oh = 0, om = 0;
+        sscanf(p + 1, "%d:%d", &oh, &om);
+        t += (*p == '+' ? -1 : 1) * (time_t)(oh * 3600 + om * 60);
+    }
+    return t;
+}
+
+/* Extracts {"utilization": N, "resets_at": "..."} for a top-level window. */
+static int usage_window(const char *doc, const char *key, double *pct, time_t *reset) {
+    const char *vs, *ve;
+    char *seg, iso[64];
+    size_t n;
+    int ok;
+
+    if (json_find_member(doc, key, &vs, &ve) != 1 || *vs != '{') return 0;
+    n = (size_t)(ve - vs);
+    seg = (char*)malloc(n + 1);
+    if (!seg) return 0;
+    memcpy(seg, vs, n);
+    seg[n] = '\0';
+
+    ok = json_number_after(seg, "\"utilization\"", pct);
+    json_string_after(seg, "\"resets_at\"", iso, sizeof(iso));
+    *reset = iso[0] ? parse_iso8601(iso) : 0;
+    free(seg);
+    return ok;
+}
+
+static char *https_get(const wchar_t *host, const wchar_t *path, const wchar_t *headers, DWORD *status) {
+    HINTERNET session = NULL, conn = NULL, req = NULL;
+    char *body = NULL;
+    size_t len = 0;
+    DWORD size = sizeof(*status), avail, got;
+
+    *status = 0;
+    session = WinHttpOpen(L"ClaudeUsageMonitor/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) goto done;
+    WinHttpSetTimeouts(session, 10000, 10000, 10000, 15000);
+    conn = WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!conn) goto done;
+    req = WinHttpOpenRequest(conn, L"GET", path, NULL, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!req) goto done;
+    if (!WinHttpSendRequest(req, headers, (DWORD)-1L, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(req, NULL)) goto done;
+    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        WINHTTP_HEADER_NAME_BY_INDEX, status, &size, WINHTTP_NO_HEADER_INDEX);
+
+    body = (char*)malloc(1);
+    while (body && WinHttpQueryDataAvailable(req, &avail) && avail > 0 && len < 4 * 1024 * 1024) {
+        char *grown = (char*)realloc(body, len + avail + 1);
+        if (!grown) { free(body); body = NULL; break; }
+        body = grown;
+        if (!WinHttpReadData(req, body + len, avail, &got) || got == 0) break;
+        len += got;
+    }
+    if (body) body[len] = '\0';
+
+done:
+    if (req) WinHttpCloseHandle(req);
+    if (conn) WinHttpCloseHandle(conn);
+    if (session) WinHttpCloseHandle(session);
+    return body;
+}
+
+/* Returns the delay in ms before the next poll. */
+static DWORD poll_usage_once(DWORD last_delay) {
+    char user[PATH_CAP], path[PATH_CAP], dir[PATH_CAP], token[4096], out[512];
+    wchar_t headers[4400];
+    char *creds, *body;
+    DWORD status;
+    double five = 0, seven = 0;
+    time_t five_reset = 0, seven_reset = 0;
+    int have_five, have_seven, n;
+
+    /* Re-read every time: Claude Code rotates the token in this file. */
+    if (!get_env_path("USERPROFILE", user, sizeof(user))) return USAGE_POLL_MS;
+    snprintf(path, sizeof(path), "%s\\.claude\\.credentials.json", user);
+    creds = read_file_all(path, 1024 * 1024, NULL);
+    token[0] = '\0';
+    if (creds) {
+        json_string_after(creds, "\"accessToken\"", token, sizeof(token));
+        SecureZeroMemory(creds, strlen(creds));
+        free(creds);
+    }
+    if (!token[0]) { InterlockedExchange(&g_api_state, API_NO_CREDS); return USAGE_POLL_MS; }
+
+    n = _snwprintf(headers, sizeof(headers) / sizeof(headers[0]),
+        L"Authorization: Bearer %hs\r\nanthropic-beta: oauth-2025-04-20\r\nAccept: application/json\r\n", token);
+    SecureZeroMemory(token, sizeof(token));
+    if (n < 0) return USAGE_POLL_MS;
+
+    body = https_get(L"api.anthropic.com", L"/api/oauth/usage", headers, &status);
+    SecureZeroMemory(headers, sizeof(headers));
+
+    if (status == 401 || status == 403) {
+        free(body);
+        InterlockedExchange(&g_api_state, API_AUTH);
+        return USAGE_POLL_MS;
+    }
+    if (status != 200 || !body) {
+        DWORD next = last_delay * 2;
+        free(body);
+        if (g_api_state != API_OK) InterlockedExchange(&g_api_state, API_NET);
+        if (next < USAGE_POLL_MS) next = USAGE_POLL_MS;
+        return next > USAGE_BACKOFF_MAX ? USAGE_BACKOFF_MAX : next;
+    }
+
+    have_five = usage_window(body, "five_hour", &five, &five_reset);
+    have_seven = usage_window(body, "seven_day", &seven, &seven_reset);
+    free(body);
+
+    /* Same shape as Claude Code's status-line payload, so read_rate_file handles both. */
+    n = snprintf(out, sizeof(out), "{\"source\":\"oauth_usage\",\"updated_at\":%lld,\"rate_limits\":{", (long long)time(NULL));
+    if (have_five)
+        n += snprintf(out + n, sizeof(out) - n, "\"five_hour\":{\"used_percentage\":%.1f,\"resets_at\":%lld}%s",
+            five, (long long)five_reset, have_seven ? "," : "");
+    if (have_seven)
+        n += snprintf(out + n, sizeof(out) - n, "\"seven_day\":{\"used_percentage\":%.1f,\"resets_at\":%lld}",
+            seven, (long long)seven_reset);
+    snprintf(out + n, sizeof(out) - n, "}}\n");
+
+    if (get_status_dir(dir, sizeof(dir))) {
+        make_dir_recursive(dir);
+        snprintf(path, sizeof(path), "%s\\status.json", dir);
+        write_file_atomic(path, out, strlen(out));
+    }
+    InterlockedExchange(&g_api_state, API_OK);
+    return USAGE_POLL_MS;
+}
+
+static DWORD WINAPI usage_poller(LPVOID arg) {
+    DWORD delay = USAGE_POLL_MS;
+    (void)arg;
+    for (;;) {
+        delay = poll_usage_once(delay);
+        Sleep(delay);
+    }
 }
 
 static void enable_dpi_awareness(void) {
@@ -649,9 +1042,13 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
 int main(int argc, char **argv) {
     char user[PATH_CAP];
 
-    if (argc > 1 && !_stricmp(argv[1], "/bridge")) {
+    /* "/bridge" is kept for old configs; Git Bash rewrites it into a path, so new ones use "--bridge". */
+    if (argc > 1 && (!_stricmp(argv[1], "--bridge") || !_stricmp(argv[1], "/bridge"))) {
         return bridge_mode();
     }
+
+    install_statusline();
+    CloseHandle(CreateThread(NULL, 0, usage_poller, NULL, 0, NULL));
 
     if (!get_env_path("USERPROFILE", user, sizeof(user))) {
         MessageBoxA(NULL, "Could not determine USERPROFILE.", "Claude Usage Monitor", MB_OK | MB_ICONERROR);

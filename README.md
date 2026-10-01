@@ -8,7 +8,7 @@ It continuously scans Claude Code's local JSONL transcripts and displays:
 - latest context-window usage
 - request count
 - a graphical context bar
-- optional live 5-hour / 7-day rate limits when Claude Code status-line data is bridged to the monitor
+- live 5-hour / 7-day subscription usage and reset times
 
 ## Build
 
@@ -24,20 +24,26 @@ Run:
 
 Press Ctrl+C to quit.
 
-## Important limitation
+## Live 5-hour / 7-day limits
 
-Claude Code's live subscription rate-limit percentages are supplied to a configured status-line command at runtime; they are not reliably available in the transcript files. The monitor therefore gets token/session information directly from local transcripts and can optionally receive the live status-line JSON through its `/bridge` mode.
+While the monitor is running, a background thread polls the same endpoint Claude Code's `/usage` command uses (`https://api.anthropic.com/api/oauth/usage`) every 30 seconds. It authenticates with Claude Code's own login token from `%USERPROFILE%\.claude\.credentials.json`; the token is re-read on every poll (Claude Code rotates it) and is only ever sent to `api.anthropic.com`. The result is written atomically to `%LOCALAPPDATA%\ClaudeUsageMonitor\status.json`.
 
-To use the live rate-limit display, configure Claude Code's `statusLine` command to invoke:
+This works however Claude Code is run, including headless hosts such as IDE extensions. If the token has expired, run Claude Code once to refresh it.
 
-    C:\path\to\ClaudeUsageMonitor.exe /bridge
+### Status-line bridge (terminal CLI)
 
-The bridge consumes the JSON Claude Code sends to a status-line command and saves it under `%LOCALAPPDATA%\ClaudeUsageMonitor\status.json`.
+The monitor also points Claude Code's `statusLine` (in `%USERPROFILE%\.claude\settings.json`) at itself, so interactive terminal sessions push fresh data after every response:
 
-If you already have a custom status line, keep it and have it also invoke the bridge; do not overwrite an existing status line blindly.
+    "statusLine": {
+      "type": "command",
+      "command": "C:/path/to/CLAUDE~1.EXE --bridge",
+      "refreshInterval": 5
+    }
+
+The command uses forward slashes, an unquoted 8.3 short path and `--bridge` (not `/bridge`), because Claude Code runs status-line commands through Git Bash (or PowerShell), and Git Bash strips backslashes and rewrites `/bridge` into a file path. A backup of the previous file is saved as `settings.json.bak`. An existing status line belonging to something else is left alone. Status lines only run in the interactive terminal UI.
 
 ## What the numbers mean
 
 "Session tokens" are summed from Claude Code transcript usage records for the most recently active session. "Context" is the latest context-window usage reported by the most recent assistant response.
 
-The 5-hour and 7-day percentages, when present, come from Claude Code's own `rate_limits` status-line payload.
+The 5-hour and 7-day percentages and reset times are the same figures Claude Code's `/usage` command shows.
