@@ -73,10 +73,18 @@
     <ClCompile Include="src\main.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\resource.h" />
+  </ItemGroup>
+  <ItemGroup>
     <ResourceCompile Include="src\app.rc" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="src\app.ico" />
+    <Image Include="src\Screenshot\ClaudeUsageMonitor.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\README.md" />
+    <None Include="..\LICENSE" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

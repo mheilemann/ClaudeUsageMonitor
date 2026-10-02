@@ -1,49 +1,145 @@
 # Claude Usage Monitor
 
-A dependency-free Visual Studio 2022 C11 command-line monitor for Claude Code on Windows.
+**Version 1.0.0**
 
-It continuously scans Claude Code's local JSONL transcripts and displays:
-- latest Claude Code session
-- cumulative input/output/cache tokens for that session
-- latest context-window usage
-- request count
-- a graphical context bar
-- live 5-hour / 7-day subscription usage and reset times
+A tiny, native Windows monitor that shows your Claude Code usage, session tokens, context window, and Anthropic account limits at a glance.
 
-## Build
+**[Download the latest release](../../releases/latest)**
 
-Open `ClaudeUsageMonitor.sln` in Visual Studio 2022 and build `Release | x64`.
+![Claude Usage Monitor](ClaudeUsageMonitor/src/Screenshot/ClaudeUsageMonitor.png)
 
-Or from a VS Developer Command Prompt:
+It gives you the information you actually need while Claude Code is running:
 
-    msbuild ClaudeUsageMonitor.sln /p:Configuration=Release /p:Platform=x64
+* **5-hour usage** and reset countdown
+* **7-day usage** and reset countdown
+* Current Claude Code **session**
+* **Input, output, cache creation, and cache read** tokens
+* Current **context-window usage**
+* Current **model** and **effort**
+* Account-level usage limits from Anthropic
+* Automatically installs a Claude Code `statusLine`
+* Runs as a single native Windows executable
 
-Run:
+## Why another Claude usage monitor?
 
-    ClaudeUsageMonitor.exe
+There are already plenty of Claude usage monitors.
 
-Press Ctrl+C to quit.
+This one is deliberately different.
 
-## Live 5-hour / 7-day limits
+It is a **small native Windows application written in C11 using Win32**.
 
-While the monitor is running, a background thread polls the same endpoint Claude Code's `/usage` command uses (`https://api.anthropic.com/api/oauth/usage`) every 30 seconds. It authenticates with Claude Code's own login token from `%USERPROFILE%\.claude\.credentials.json`; the token is re-read on every poll (Claude Code rotates it) and is only ever sent to `api.anthropic.com`. The result is written atomically to `%LOCALAPPDATA%\ClaudeUsageMonitor\status.json`.
+There is:
 
-This works however Claude Code is run, including headless hosts such as IDE extensions. If the token has expired, run Claude Code once to refresh it.
+* No Python
+* No Node.js
+* No Electron
+* No runtime to install
+* No third-party libraries
+* No telemetry
+* No cloud service
 
-### Status-line bridge (terminal CLI)
+Just download the executable and run it.
 
-The monitor also points Claude Code's `statusLine` (in `%USERPROFILE%\.claude\settings.json`) at itself, so interactive terminal sessions push fresh data after every response:
+## How it works
 
-    "statusLine": {
-      "type": "command",
-      "command": "C:/path/to/CLAUDE~1.EXE --bridge",
-      "refreshInterval": 5
-    }
+Claude Usage Monitor reads the local Claude Code session data stored on your computer and displays the current session information.
 
-The command uses forward slashes, an unquoted 8.3 short path and `--bridge` (not `/bridge`), because Claude Code runs status-line commands through Git Bash (or PowerShell), and Git Bash strips backslashes and rewrites `/bridge` into a file path. A backup of the previous file is saved as `settings.json.bak`. An existing status line belonging to something else is left alone. Status lines only run in the interactive terminal UI.
+The monitor uses the credentials already maintained by Claude Code when querying Anthropic. It does not create, maintain, or store its own copy of those credentials.
 
-## What the numbers mean
+Account-level usage and reset information is retrieved from Anthropic's usage service.
 
-"Session tokens" are summed from Claude Code transcript usage records for the most recently active session. "Context" is the latest context-window usage reported by the most recent assistant response.
+The application does not send your conversation contents anywhere. Local Claude Code JSONL files are read directly from your computer to extract session statistics; conversation contents are not collected or transmitted.
 
-The 5-hour and 7-day percentages and reset times are the same figures Claude Code's `/usage` command shows.
+The source code is available for inspection.
+
+## Installation
+
+Download the [latest release](../../releases/latest) and run:
+
+`ClaudeUsageMonitor.exe`
+
+On first run, the application automatically configures a Claude Code `statusLine` if needed.
+
+Before modifying your Claude Code settings, it creates a backup of the existing settings file.
+
+No installer is required.
+
+**Windows SmartScreen:** Because the executable is not digitally signed, Windows may display a SmartScreen warning when you first run it. This is a reputation warning, not an indication that the application requires an installer or additional software.
+
+For security, download releases only from this GitHub repository.
+
+## Requirements
+
+* Windows 10 or later
+* Claude Code
+
+Claude Usage Monitor depends on Claude Code's local session and configuration formats, which may change between Claude Code releases.
+
+## Troubleshooting
+
+If the Claude Code `statusLine` does not appear after starting the monitor, restart Claude Code. The monitor only modifies the Claude Code configuration; restarting Claude Code causes the updated configuration to be loaded.
+
+## What it shows
+
+The monitor shows both your **account-level usage limits** and the **current Claude Code session**.
+
+### Account usage
+
+* 5-hour usage
+* 5-hour reset time
+* 7-day usage
+* 7-day reset time
+
+### Current session
+
+* Model
+* Effort level
+* Input tokens
+* Output tokens
+* Cache creation tokens
+* Cache read tokens
+* Total context currently in use
+
+The monitor can continue displaying account usage even when Claude Code is not actively running.
+
+**Note:** Account usage and session token counts come from different data sources and should not be expected to correspond directly.
+
+## Privacy
+
+Claude Usage Monitor is designed to keep things local.
+  * Does not collect telemetry
+  * Does not require an account
+  * Does not collect or transmit your conversation contents
+  * Does not maintain or persist a copy of your Anthropic OAuth credentials
+  * Reads Claude Code's local files directly
+  * Uses Anthropic's usage endpoint for account-level quota information
+
+The complete source code is included so you can see exactly what it does.
+
+## Building from source
+
+The project is written in C11 and targets native Win32.
+
+It can be built with **Visual Studio 2022**.
+
+No external libraries are required.
+
+## Project status
+
+This is a small utility built because I wanted a simple way to see what Claude Code was doing without running a large desktop application.
+
+It intentionally doesn't try to be an all-in-one dashboard.
+
+If you want **one small Windows executable that tells you what Claude Code is using right now**, this is what this project is for.
+
+## Support
+
+If you find it useful, you can support the project.
+
+[Support Me](https://www.paypal.com/paypalme/MichaelHeilemann420)
+
+## License
+
+Claude Usage Monitor is released under the [MIT License](LICENSE).
+
+The MIT License applies to the Claude Usage Monitor source code. It does not grant any rights to Claude Code, Anthropic APIs, Anthropic trademarks, or other third-party software or services.

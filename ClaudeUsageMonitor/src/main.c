@@ -4,6 +4,12 @@
     No third-party libraries. Native Win32 GUI, no console window.
 */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +18,23 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <winhttp.h>
+#include <shellapi.h>
+#include <dwmapi.h>
+#include "resource.h"
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
+
+#define APP_VERSION "1.0.0"
+#define PAYPAL_URL "https://www.paypal.com/paypalme/MichaelHeilemann420?locale.x=en_US&country.x=US"
 
 #define PATH_CAP 4096
 #define LINE_CAP 65536
@@ -348,6 +369,7 @@ static COLORREF bar_color(double pct) {
 static int g_measuring = 0;
 static int g_max_x = 0;
 static HDC g_measure_dc = NULL;
+static RECT g_paypal_rect = { 0, 0, 0, 0 };
 
 static void draw_bar(HDC hdc, int x, int y, int w, int h, double pct) {
     RECT track = { x, y, x + w, y + h };
@@ -388,6 +410,46 @@ static void text_out(HDC hdc, int x, int y, COLORREF color, HFONT font, const ch
     TextOutA(hdc, x, y, s, (int)strlen(s));
 }
 
+/* Draws a small bordered button with centered text and records its rect for
+   click hit-testing. x,y is the button's top-left; h is its fixed height. */
+static void draw_button(HDC hdc, int x, int y, int h, HFONT font, COLORREF text_color,
+    COLORREF border_color, const char *label, RECT *rect_out) {
+    SIZE sz;
+    HDC measure_on = g_measuring ? g_measure_dc : hdc;
+    const int pad_x = SX(8);
+    int w;
+
+    SelectObject(measure_on, font);
+    GetTextExtentPoint32A(measure_on, label, (int)strlen(label), &sz);
+    w = sz.cx + pad_x * 2;
+
+    if (g_measuring) {
+        if (x + w > g_max_x) g_max_x = x + w;
+        return;
+    }
+
+    {
+        RECT r = { x, y, x + w, y + h };
+        HBRUSH fill = CreateSolidBrush(RGB(28, 40, 46));
+        HPEN pen = CreatePen(PS_SOLID, 1, border_color);
+        HPEN old_pen = (HPEN)SelectObject(hdc, pen);
+        HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+        FillRect(hdc, &r, fill);
+        DeleteObject(fill);
+        Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(pen);
+
+        SetTextColor(hdc, text_color);
+        SetBkMode(hdc, TRANSPARENT);
+        TextOutA(hdc, x + pad_x, y + (h - sz.cy) / 2, label, (int)strlen(label));
+
+        if (rect_out) *rect_out = r;
+    }
+}
+
 static int render(HDC hdc, RECT *client) {
     char buf[256];
     int y = SX(8);
@@ -402,15 +464,27 @@ static int render(HDC hdc, RECT *client) {
         DeleteObject(bg);
     }
 
-    text_out(hdc, left, y, cyan, g_font_title, "CLAUDE USAGE MONITOR");
-    y += SX(20);
-    if (!g_measuring) {
-        RECT line = { left, y, client->right - left, y + SX(2) };
-        HBRUSH accent = CreateSolidBrush(cyan);
-        FillRect(hdc, &line, accent);
-        DeleteObject(accent);
+    {
+        HDC measure_on = g_measuring ? g_measure_dc : hdc;
+        SIZE title_sz, btn_sz;
+        const int pad_x = SX(8);
+        int btn_h, btn_w, btn_x;
+
+        SelectObject(measure_on, g_font_title);
+        GetTextExtentPoint32A(measure_on, "M", 1, &title_sz);
+
+        SelectObject(measure_on, g_font_body);
+        GetTextExtentPoint32A(measure_on, "Support the App", (int)strlen("Support the App"), &btn_sz);
+        btn_w = btn_sz.cx + pad_x * 2;
+        btn_h = (int)(title_sz.cy * 0.50);
+        btn_x = g_measuring ? left : client->right - left - btn_w;
+
+        draw_button(hdc, btn_x, y, btn_h,
+            g_font_body, cyan, cyan, "Support the App", &g_paypal_rect);
+
+        y += btn_h;
     }
-    y += SX(10);
+    y += SX(4);
 
     if (!g_have_session) {
         text_out(hdc, left, y, white, g_font_body, "No Claude Code sessions found under:");
@@ -445,10 +519,10 @@ static int render(HDC hdc, RECT *client) {
         format_tokens(g_session.cache_create + g_session.cache_read, cachebuf, sizeof(cachebuf));
         format_tokens(total, totalbuf, sizeof(totalbuf));
 
-        snprintf(buf, sizeof(buf), "In: %8s   Out: %8s", inbuf, outbuf);
+        snprintf(buf, sizeof(buf), "In:   %8s         Out: %8s", inbuf, outbuf);
         text_out(hdc, left + SX(8), y, white, g_font_body, buf);
         y += SX(15);
-        snprintf(buf, sizeof(buf), "Cache:%8s   Tot: %8s", cachebuf, totalbuf);
+        snprintf(buf, sizeof(buf), "Cache:%8s         Tot: %8s", cachebuf, totalbuf);
         text_out(hdc, left + SX(8), y, white, g_font_body, buf);
         y += SX(20);
     }
@@ -631,6 +705,22 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PAINT:
         on_paint(hwnd);
         return 0;
+    case WM_LBUTTONDOWN: {
+        POINT pt = { LOWORD(lp), HIWORD(lp) };
+        if (PtInRect(&g_paypal_rect, pt))
+            ShellExecuteA(NULL, "open", PAYPAL_URL, NULL, NULL, SW_SHOWNORMAL);
+        return 0;
+    }
+    case WM_SETCURSOR: {
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        if (PtInRect(&g_paypal_rect, pt)) {
+            SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_HAND));
+            return TRUE;
+        }
+        break;
+    }
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_ID);
         PostQuitMessage(0);
@@ -1047,7 +1137,8 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = hinst;
     wc.hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
-    wc.hIcon = LoadIconA(NULL, (LPCSTR)IDI_APPLICATION);
+    wc.hIcon = LoadIconA(hinst, MAKEINTRESOURCEA(IDI_APPICON));
+    wc.hIconSm = wc.hIcon;
     wc.lpszClassName = "ClaudeUsageMonitorWnd";
     RegisterClassExA(&wc);
 
@@ -1063,10 +1154,17 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
         x = (screen_w - win_w) / 2;
         y = (screen_h - win_h) / 2;
 
-        hwnd = CreateWindowExA(0, wc.lpszClassName, "Claude Usage Monitor",
+        hwnd = CreateWindowExA(0, wc.lpszClassName, "Claude Usage Monitor v" APP_VERSION,
             style, x, y, win_w, win_h, NULL, NULL, hinst, NULL);
     }
     if (!hwnd) return 1;
+
+    {
+        COLORREF caption_color = RGB(20, 20, 22);
+        COLORREF text_color = RGB(90, 200, 255);
+        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color, sizeof(caption_color));
+        DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &text_color, sizeof(text_color));
+    }
 
     ShowWindow(hwnd, show_cmd);
     UpdateWindow(hwnd);
