@@ -515,10 +515,10 @@ static int render(HDC hdc, RECT *client) {
         format_tokens(g_session.cache_create + g_session.cache_read, cachebuf, sizeof(cachebuf));
         format_tokens(total, totalbuf, sizeof(totalbuf));
 
-        snprintf(buf, sizeof(buf), "In:   %8s   Out: %8s", inbuf, outbuf);
+        snprintf(buf, sizeof(buf), "In:   %8s         Out: %8s", inbuf, outbuf);
         text_out(hdc, left + SX(8), y, white, g_font_body, buf);
         y += SX(15);
-        snprintf(buf, sizeof(buf), "Cache:%8s   Tot: %8s", cachebuf, totalbuf);
+        snprintf(buf, sizeof(buf), "Cache:%8s         Tot: %8s", cachebuf, totalbuf);
         text_out(hdc, left + SX(8), y, white, g_font_body, buf);
         y += SX(20);
     }
