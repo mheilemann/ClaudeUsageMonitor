@@ -475,17 +475,12 @@ static int render(HDC hdc, RECT *client) {
         btn_h = (int)(title_sz.cy * 0.50);
         btn_x = g_measuring ? left : client->right - left - btn_w;
 
-        draw_button(hdc, btn_x, y + (title_sz.cy - btn_h) / 2, btn_h,
+        draw_button(hdc, btn_x, y, btn_h,
             g_font_body, cyan, cyan, "Support the App", &g_paypal_rect);
+
+        y += btn_h;
     }
-    y += SX(20);
-    if (!g_measuring) {
-        RECT line = { left, y, client->right - left, y + SX(2) };
-        HBRUSH accent = CreateSolidBrush(cyan);
-        FillRect(hdc, &line, accent);
-        DeleteObject(accent);
-    }
-    y += SX(10);
+    y += SX(4);
 
     if (!g_have_session) {
         text_out(hdc, left, y, white, g_font_body, "No Claude Code sessions found under:");

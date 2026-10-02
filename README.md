@@ -4,6 +4,8 @@
 
 A tiny, native Windows usage monitor for **Claude Code**.
 
+![Claude Usage Monitor](ClaudeUsageMonitor/src/Screenshot/ClaudeUsageMonitor.png)
+
 It gives you the information you actually need while Claude Code is running:
 
 * **5-hour usage** and reset countdown
