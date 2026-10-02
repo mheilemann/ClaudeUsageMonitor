@@ -19,6 +19,7 @@
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
 
+#define APP_VERSION "1.0.0"
 #define PAYPAL_URL "https://www.paypal.com/paypalme/MichaelHeilemann420?locale.x=en_US&country.x=US"
 
 #define PATH_CAP 4096
@@ -459,9 +460,19 @@ static int render(HDC hdc, RECT *client) {
 
         text_out(hdc, left, y, cyan, g_font_title, title);
         {
-            int btn_h = (int)(title_sz.cy * 0.50);
-            draw_button(hdc, left + title_sz.cx + SX(14), y + (title_sz.cy - btn_h) / 2, btn_h,
-                g_font_body, cyan, cyan, "Support Me", &g_paypal_rect);
+            const char *version = "v" APP_VERSION;
+            SIZE ver_sz;
+            int ver_x = left + title_sz.cx + SX(10);
+
+            SelectObject(measure_on, g_font_body);
+            GetTextExtentPoint32A(measure_on, version, (int)strlen(version), &ver_sz);
+            text_out(hdc, ver_x, y + (title_sz.cy - ver_sz.cy) / 2, dim, g_font_body, version);
+
+            {
+                int btn_h = (int)(title_sz.cy * 0.50);
+                draw_button(hdc, ver_x + ver_sz.cx + SX(14), y + (title_sz.cy - btn_h) / 2, btn_h,
+                    g_font_body, cyan, cyan, "Support Me", &g_paypal_rect);
+            }
         }
     }
     y += SX(20);
@@ -1140,7 +1151,7 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
         x = (screen_w - win_w) / 2;
         y = (screen_h - win_h) / 2;
 
-        hwnd = CreateWindowExA(0, wc.lpszClassName, "Claude Usage Monitor",
+        hwnd = CreateWindowExA(0, wc.lpszClassName, "Claude Usage Monitor v" APP_VERSION,
             style, x, y, win_w, win_h, NULL, NULL, hinst, NULL);
     }
     if (!hwnd) return 1;

@@ -1,49 +1,134 @@
 # Claude Usage Monitor
 
-A dependency-free Visual Studio 2022 C11 command-line monitor for Claude Code on Windows.
+**Version 1.0.0**
 
-It continuously scans Claude Code's local JSONL transcripts and displays:
-- latest Claude Code session
-- cumulative input/output/cache tokens for that session
-- latest context-window usage
-- request count
-- a graphical context bar
-- live 5-hour / 7-day subscription usage and reset times
+A tiny, native Windows usage monitor for **Claude Code**.
 
-## Build
+It gives you the information you actually need while Claude Code is running:
 
-Open `ClaudeUsageMonitor.sln` in Visual Studio 2022 and build `Release | x64`.
+* **5-hour usage** and reset countdown
+* **7-day usage** and reset countdown
+* Current Claude Code **session**
+* **Input, output, cache creation, and cache read** tokens
+* Current **context-window usage**
+* Current **model** and **effort**
+* Account-level usage limits from Anthropic
+* Automatically installs a Claude Code `statusLine`
+* Runs as a single native Windows executable
 
-Or from a VS Developer Command Prompt:
+## Why another Claude usage monitor?
 
-    msbuild ClaudeUsageMonitor.sln /p:Configuration=Release /p:Platform=x64
+There are already plenty of Claude usage monitors.
 
-Run:
+This one is deliberately different.
 
-    ClaudeUsageMonitor.exe
+It is a **small native Windows application written in C11 using Win32**.
 
-Press Ctrl+C to quit.
+There is:
 
-## Live 5-hour / 7-day limits
+* No Python
+* No Node.js
+* No Electron
+* No runtime to install
+* No third-party libraries
+* No telemetry
+* No cloud service
 
-While the monitor is running, a background thread polls the same endpoint Claude Code's `/usage` command uses (`https://api.anthropic.com/api/oauth/usage`) every 30 seconds. It authenticates with Claude Code's own login token from `%USERPROFILE%\.claude\.credentials.json`; the token is re-read on every poll (Claude Code rotates it) and is only ever sent to `api.anthropic.com`. The result is written atomically to `%LOCALAPPDATA%\ClaudeUsageMonitor\status.json`.
+Just download the executable and run it.
 
-This works however Claude Code is run, including headless hosts such as IDE extensions. If the token has expired, run Claude Code once to refresh it.
+## How it works
 
-### Status-line bridge (terminal CLI)
+Claude Usage Monitor reads the local Claude Code session data stored on your computer and displays the current session information.
 
-The monitor also points Claude Code's `statusLine` (in `%USERPROFILE%\.claude\settings.json`) at itself, so interactive terminal sessions push fresh data after every response:
+It also uses Claude Code's existing OAuth credentials to retrieve your account's official usage limits from Anthropic.
 
-    "statusLine": {
-      "type": "command",
-      "command": "C:/path/to/CLAUDE~1.EXE --bridge",
-      "refreshInterval": 5
-    }
+Your credentials are **not stored by this application**.
 
-The command uses forward slashes, an unquoted 8.3 short path and `--bridge` (not `/bridge`), because Claude Code runs status-line commands through Git Bash (or PowerShell), and Git Bash strips backslashes and rewrites `/bridge` into a file path. A backup of the previous file is saved as `settings.json.bak`. An existing status line belonging to something else is left alone. Status lines only run in the interactive terminal UI.
+The application does not send your conversation contents anywhere. Local Claude Code JSONL files are read directly from your computer to obtain session statistics.
 
-## What the numbers mean
+The source code is available for inspection.
 
-"Session tokens" are summed from Claude Code transcript usage records for the most recently active session. "Context" is the latest context-window usage reported by the most recent assistant response.
+## Installation
 
-The 5-hour and 7-day percentages and reset times are the same figures Claude Code's `/usage` command shows.
+Download the latest release and run:
+
+`ClaudeUsageMonitor.exe`
+
+The application automatically configures a Claude Code `statusLine` if needed.
+
+Before modifying your Claude Code settings, it creates a backup of the existing settings file.
+
+No installer is required.
+
+## Requirements
+
+* Windows 10 or later
+* Claude Code
+
+That's it.
+
+## What it shows
+
+### Account usage
+
+* 5-hour usage
+* 5-hour reset time
+* 7-day usage
+* 7-day reset time
+
+### Current session
+
+* Model
+* Effort level
+* Input tokens
+* Output tokens
+* Cache creation tokens
+* Cache read tokens
+* Total context currently in use
+
+The monitor can continue displaying account usage even when Claude Code is not actively running.
+
+## Privacy
+
+Claude Usage Monitor is designed to keep things local.
+
+It:
+
+* Does not collect telemetry
+* Does not require an account
+* Does not upload your conversation history
+* Does not store your Anthropic OAuth token
+* Reads Claude Code's local files directly
+* Uses Anthropic's official usage endpoint for account-level quota information
+
+The complete source code is included so you can see exactly what it does.
+
+## Building from source
+
+The project is written in C11 and targets native Win32.
+
+It can be built with **Visual Studio 2022**.
+
+No external libraries are required.
+
+## Project status
+
+This is a small utility built because I wanted a simple way to see what Claude Code was doing without running a large desktop application.
+
+It intentionally doesn't try to be an all-in-one dashboard.
+
+If you want historical charts, multiple AI providers, mobile apps, extensive analytics, and a dozen configuration screens, there are other projects that do that.
+
+If you want **one small Windows executable that tells you what Claude Code is using right now**, this is what this project is for.
+
+## Support
+
+If you find it useful, you can support the project.
+
+[Support Me](https://www.paypal.com/paypalme/MichaelHeilemann420)
+
+## License
+
+Claude Usage Monitor is released under the [MIT License](LICENSE).
+
+The MIT License applies to the Claude Usage Monitor source code. It does not grant any rights to Claude Code, Anthropic APIs, Anthropic trademarks, or other third-party software or services.
