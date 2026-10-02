@@ -658,7 +658,7 @@ static void measure_window_size(int *out_w, int *out_h) {
     g_have_session = saved_have_session;
 
     *out_w = (int)((g_max_x + left + SX(16)) * 0.9);
-    *out_h = final_y + SX(10);
+    *out_h = (int)((final_y + SX(10)) * 0.95);
 }
 
 /* Re-fonts, re-measures and resizes/repositions the window for a new DPI.
