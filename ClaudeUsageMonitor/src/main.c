@@ -530,6 +530,91 @@ static void on_paint(HWND hwnd) {
     EndPaint(hwnd, &ps);
 }
 
+static void create_fonts(void) {
+    if (g_font_title) DeleteObject(g_font_title);
+    if (g_font_header) DeleteObject(g_font_header);
+    if (g_font_body) DeleteObject(g_font_body);
+
+    g_font_title = CreateFontA(-SX(17), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
+    g_font_header = CreateFontA(-SX(13), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
+    g_font_body = CreateFontA(-SX(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, FIXED_PITCH, "Consolas");
+}
+
+/* Measures the content at the current g_dpi/fonts using the same worst-case
+   placeholder data the initial sizing pass uses, so the window never has to
+   grow later just because real numbers are wider than "unknown"/0. */
+static void measure_window_size(int *out_w, int *out_h) {
+    HDC mdc = GetDC(NULL);
+    int left = SX(12);
+    int final_y;
+    RECT dummy = { 0, 0, 0, 0 };
+    SessionStats saved_session = g_session;
+    RateStats saved_rates = g_rates;
+    int saved_have_session = g_have_session;
+    time_t now = time(NULL);
+
+    g_have_session = 1;
+    memset(&g_session, 0, sizeof(g_session));
+    strncpy(g_session.model, "claude-sonnet-4-5-20250929", sizeof(g_session.model) - 1);
+    strncpy(g_session.effort, "medium", sizeof(g_session.effort) - 1);
+    g_session.requests = 9999;
+    g_session.context_tokens = 199999;
+    g_session.context_pct = 100.0;
+
+    g_rates.valid = 1;
+    g_rates.five_pct = 100.0;
+    g_rates.seven_pct = 100.0;
+    g_rates.five_reset = now + 4 * 3600 + 59 * 60 + 59;
+    g_rates.seven_reset = now + 6 * 86400 + 23 * 3600 + 59 * 60;
+
+    g_measure_dc = mdc;
+    g_measuring = 1;
+    g_max_x = 0;
+    final_y = render(NULL, &dummy);
+    g_measuring = 0;
+    g_measure_dc = NULL;
+    ReleaseDC(NULL, mdc);
+
+    g_session = saved_session;
+    g_rates = saved_rates;
+    g_have_session = saved_have_session;
+
+    *out_w = (int)((g_max_x + left + SX(16)) * 0.9);
+    *out_h = final_y + SX(10);
+}
+
+/* Re-fonts, re-measures and resizes/repositions the window for a new DPI.
+   suggested is the RECT Windows hands back in WM_DPICHANGED's lParam, or
+   NULL to keep the window's current top-left (used at initial creation). */
+static void apply_dpi(HWND hwnd, int dpi, const RECT *suggested) {
+    int win_w, win_h;
+    DWORD style = (DWORD)GetWindowLongA(hwnd, GWL_STYLE);
+    RECT wr;
+
+    g_dpi = dpi;
+    create_fonts();
+    measure_window_size(&win_w, &win_h);
+
+    wr.left = 0; wr.top = 0; wr.right = win_w; wr.bottom = win_h;
+    AdjustWindowRectEx(&wr, style, FALSE, 0);
+    win_w = wr.right - wr.left;
+    win_h = wr.bottom - wr.top;
+
+    if (suggested) {
+        SetWindowPos(hwnd, NULL, suggested->left, suggested->top, win_w, win_h,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    } else {
+        SetWindowPos(hwnd, NULL, 0, 0, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+    }
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE:
@@ -539,6 +624,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         refresh_data();
         InvalidateRect(hwnd, NULL, FALSE);
+        return 0;
+    case WM_DPICHANGED:
+        apply_dpi(hwnd, HIWORD(wp), (const RECT*)lp);
         return 0;
     case WM_ERASEBKGND:
         return 1;
@@ -950,57 +1038,10 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
 
     enable_dpi_awareness();
     g_dpi = get_system_dpi();
-
-    g_font_title = CreateFontA(-SX(17), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
-    g_font_header = CreateFontA(-SX(13), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, VARIABLE_PITCH, "Segoe UI");
-    g_font_body = CreateFontA(-SX(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, FIXED_PITCH, "Consolas");
+    create_fonts();
 
     /* Measure the content to size the window precisely instead of guessing pixels. */
-    {
-        HDC mdc = GetDC(NULL);
-        int left = SX(12);
-        int final_y;
-        RECT dummy = { 0, 0, 0, 0 };
-        SessionStats saved_session = g_session;
-        RateStats saved_rates = g_rates;
-        int saved_have_session = g_have_session;
-        time_t now = time(NULL);
-
-        g_have_session = 1;
-        memset(&g_session, 0, sizeof(g_session));
-        strncpy(g_session.model, "claude-sonnet-4-5-20250929", sizeof(g_session.model) - 1);
-        strncpy(g_session.effort, "medium", sizeof(g_session.effort) - 1);
-        g_session.requests = 9999;
-        g_session.context_tokens = 199999;
-        g_session.context_pct = 100.0;
-
-        g_rates.valid = 1;
-        g_rates.five_pct = 100.0;
-        g_rates.seven_pct = 100.0;
-        g_rates.five_reset = now + 4 * 3600 + 59 * 60 + 59;
-        g_rates.seven_reset = now + 6 * 86400 + 23 * 3600 + 59 * 60;
-
-        g_measure_dc = mdc;
-        g_measuring = 1;
-        g_max_x = 0;
-        final_y = render(NULL, &dummy);
-        g_measuring = 0;
-        g_measure_dc = NULL;
-        ReleaseDC(NULL, mdc);
-
-        g_session = saved_session;
-        g_rates = saved_rates;
-        g_have_session = saved_have_session;
-
-        win_w = (int)((g_max_x + left + SX(16)) * 0.9);
-        win_h = final_y + SX(10);
-    }
+    measure_window_size(&win_w, &win_h);
 
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = sizeof(wc);
