@@ -4,8 +4,6 @@
     No third-party libraries. Native Win32 GUI, no console window.
 */
 
-#define _CRT_SECURE_NO_WARNINGS
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
