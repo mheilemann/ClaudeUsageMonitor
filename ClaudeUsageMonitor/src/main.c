@@ -461,20 +461,22 @@ static int render(HDC hdc, RECT *client) {
     }
 
     {
-        const char *title = "CLAUDE USAGE MONITOR";
         HDC measure_on = g_measuring ? g_measure_dc : hdc;
-        SIZE title_sz;
+        SIZE title_sz, btn_sz;
+        const int pad_x = SX(8);
+        int btn_h, btn_w, btn_x;
 
         SelectObject(measure_on, g_font_title);
-        GetTextExtentPoint32A(measure_on, title, (int)strlen(title), &title_sz);
+        GetTextExtentPoint32A(measure_on, "M", 1, &title_sz);
 
-        text_out(hdc, left, y, cyan, g_font_title, title);
-        {
-            int btn_x = left + title_sz.cx + SX(14);
-            int btn_h = (int)(title_sz.cy * 0.50);
-            draw_button(hdc, btn_x, y + (title_sz.cy - btn_h) / 2, btn_h,
-                g_font_body, cyan, cyan, "Support Me", &g_paypal_rect);
-        }
+        SelectObject(measure_on, g_font_body);
+        GetTextExtentPoint32A(measure_on, "Support the App", (int)strlen("Support the App"), &btn_sz);
+        btn_w = btn_sz.cx + pad_x * 2;
+        btn_h = (int)(title_sz.cy * 0.50);
+        btn_x = g_measuring ? left : client->right - left - btn_w;
+
+        draw_button(hdc, btn_x, y + (title_sz.cy - btn_h) / 2, btn_h,
+            g_font_body, cyan, cyan, "Support the App", &g_paypal_rect);
     }
     y += SX(20);
     if (!g_measuring) {
@@ -1160,7 +1162,7 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
 
     {
         COLORREF caption_color = RGB(20, 20, 22);
-        COLORREF text_color = RGB(90, 200, 255);
+        COLORREF text_color = RGB(160, 225, 255);
         DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color, sizeof(caption_color));
         DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &text_color, sizeof(text_color));
     }
