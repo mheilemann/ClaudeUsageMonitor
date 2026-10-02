@@ -199,6 +199,13 @@ static void format_tokens(unsigned long long n, char *out, size_t cap) {
         snprintf(out, cap, "%llu", n);
 }
 
+static void format_reset_absolute(time_t t, int with_date, char *out, size_t cap) {
+    struct tm tmv;
+    if (t <= 0) { snprintf(out, cap, "--"); return; }
+    tmv = *localtime(&t);
+    strftime(out, cap, with_date ? "%a %I:%M %p" : "%#I:%M %p", &tmv);
+}
+
 static void format_reset(time_t t, char *out, size_t cap) {
     long long diff;
     long long days, hours, mins, secs;
@@ -213,13 +220,13 @@ static void format_reset(time_t t, char *out, size_t cap) {
     secs = diff % 60;
 
     if (days > 0)
-        snprintf(out, cap, "%lldd %lldh %lldm", days, hours, mins);
+        snprintf(out, cap, "%lldd %lldh %02lldm", days, hours, mins);
     else if (hours > 0)
-        snprintf(out, cap, "%lldh %lldm %llds", hours, mins, secs);
+        snprintf(out, cap, "%lld:%02lld:%02lld", hours, mins, secs);
     else if (mins > 0)
-        snprintf(out, cap, "%lldm %llds", mins, secs);
+        snprintf(out, cap, "%02lld:%02lld", mins, secs);
     else
-        snprintf(out, cap, "%llds", secs);
+        snprintf(out, cap, "%lld", secs);
 }
 
 static int read_rate_file(RateStats *r) {
@@ -370,6 +377,37 @@ static int g_measuring = 0;
 static int g_max_x = 0;
 static HDC g_measure_dc = NULL;
 static RECT g_paypal_rect = { 0, 0, 0, 0 };
+static RECT g_five_rect = { 0, 0, 0, 0 };
+static RECT g_seven_rect = { 0, 0, 0, 0 };
+static int g_show_abs_five = 0;
+static int g_show_abs_seven = 0;
+
+#define SETTINGS_REG_KEY "Software\\ClaudeUsageMonitor"
+
+static void load_time_settings(void) {
+    HKEY key;
+    DWORD val, size = sizeof(val), type;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, SETTINGS_REG_KEY, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        return;
+    if (RegQueryValueExA(key, "ShowAbsFive", NULL, &type, (LPBYTE)&val, &size) == ERROR_SUCCESS && type == REG_DWORD)
+        g_show_abs_five = val ? 1 : 0;
+    size = sizeof(val);
+    if (RegQueryValueExA(key, "ShowAbsSeven", NULL, &type, (LPBYTE)&val, &size) == ERROR_SUCCESS && type == REG_DWORD)
+        g_show_abs_seven = val ? 1 : 0;
+    RegCloseKey(key);
+}
+
+static void save_time_settings(void) {
+    HKEY key;
+    DWORD val;
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, SETTINGS_REG_KEY, 0, NULL, 0, KEY_WRITE, NULL, &key, NULL) != ERROR_SUCCESS)
+        return;
+    val = (DWORD)g_show_abs_five;
+    RegSetValueExA(key, "ShowAbsFive", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+    val = (DWORD)g_show_abs_seven;
+    RegSetValueExA(key, "ShowAbsSeven", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+    RegCloseKey(key);
+}
 
 static void draw_bar(HDC hdc, int x, int y, int w, int h, double pct) {
     RECT track = { x, y, x + w, y + h };
@@ -545,22 +583,39 @@ static int render(HDC hdc, RECT *client) {
     text_out(hdc, left, y, cyan, g_font_header, "SUBSCRIPTION RATE LIMITS");
     y += SX(17);
     if (g_rates.valid) {
-        char reset[32];
+        char reset[48];
         const int bar_x = left + SX(50);
         const int bar_w = SX(150);
+        int row_y;
 
-        format_reset(g_rates.five_reset, reset, sizeof(reset));
+        row_y = y;
+        if (g_show_abs_five)
+            format_reset_absolute(g_rates.five_reset, 0, reset, sizeof(reset));
+        else
+            format_reset(g_rates.five_reset, reset, sizeof(reset));
         text_out(hdc, left + SX(8), y, white, g_font_body, "5-hour");
         draw_bar(hdc, bar_x, y, bar_w, SX(14), g_rates.five_pct);
-        snprintf(buf, sizeof(buf), "%.1f%% (%s)", g_rates.five_pct, reset);
+        snprintf(buf, sizeof(buf), "%.1f%% %s", g_rates.five_pct, reset);
         text_out(hdc, bar_x + bar_w + SX(8), y + SX(1), white, g_font_body, buf);
+        if (!g_measuring) {
+            RECT r = { left, row_y, client->right, row_y + SX(18) };
+            g_five_rect = r;
+        }
         y += SX(18);
 
-        format_reset(g_rates.seven_reset, reset, sizeof(reset));
+        row_y = y;
+        if (g_show_abs_seven)
+            format_reset_absolute(g_rates.seven_reset, 1, reset, sizeof(reset));
+        else
+            format_reset(g_rates.seven_reset, reset, sizeof(reset));
         text_out(hdc, left + SX(8), y, white, g_font_body, "7-day");
         draw_bar(hdc, bar_x, y, bar_w, SX(14), g_rates.seven_pct);
-        snprintf(buf, sizeof(buf), "%.1f%% (%s)", g_rates.seven_pct, reset);
+        snprintf(buf, sizeof(buf), "%.1f%% %s", g_rates.seven_pct, reset);
         text_out(hdc, bar_x + bar_w + SX(8), y + SX(1), white, g_font_body, buf);
+        if (!g_measuring) {
+            RECT r = { left, row_y, client->right, row_y + SX(22) };
+            g_seven_rect = r;
+        }
         y += SX(22);
     } else {
         const char *l1 = "Fetching live 5-hour/7-day data...", *l2 = "";
@@ -709,13 +764,22 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt = { LOWORD(lp), HIWORD(lp) };
         if (PtInRect(&g_paypal_rect, pt))
             ShellExecuteA(NULL, "open", PAYPAL_URL, NULL, NULL, SW_SHOWNORMAL);
+        else if (PtInRect(&g_five_rect, pt)) {
+            g_show_abs_five = !g_show_abs_five;
+            save_time_settings();
+            InvalidateRect(hwnd, NULL, FALSE);
+        } else if (PtInRect(&g_seven_rect, pt)) {
+            g_show_abs_seven = !g_show_abs_seven;
+            save_time_settings();
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
         return 0;
     }
     case WM_SETCURSOR: {
         POINT pt;
         GetCursorPos(&pt);
         ScreenToClient(hwnd, &pt);
-        if (PtInRect(&g_paypal_rect, pt)) {
+        if (PtInRect(&g_paypal_rect, pt) || PtInRect(&g_five_rect, pt) || PtInRect(&g_seven_rect, pt)) {
             SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_HAND));
             return TRUE;
         }
@@ -1124,6 +1188,7 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
     MSG msg;
     int screen_w, screen_h, x, y, win_w, win_h;
 
+    load_time_settings();
     enable_dpi_awareness();
     g_dpi = get_system_dpi();
     create_fonts();
