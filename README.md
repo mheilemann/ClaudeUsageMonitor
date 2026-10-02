@@ -75,8 +75,6 @@ For security, download releases only from this GitHub repository.
 
 Claude Usage Monitor depends on Claude Code's local session and configuration formats, which may change between Claude Code releases.
 
-That's it.
-
 ## Troubleshooting
 
 If the Claude Code `statusLine` does not appear after starting the monitor, restart Claude Code. The monitor only modifies the Claude Code configuration; restarting Claude Code causes the updated configuration to be loaded.
@@ -110,14 +108,13 @@ The monitor can continue displaying account usage even when Claude Code is not a
 
 Claude Usage Monitor is designed to keep things local.
 
-It:
-
-* Does not collect telemetry
-* Does not require an account
-* Does not collect or transmit your conversation contents
-* Does not maintain or persist a copy of your Anthropic OAuth credentials
-* Reads Claude Code's local files directly
-* Uses Anthropic's usage endpoint for account-level quota information
+Claude Usage Monitor:
+  * Does not collect telemetry
+  * Does not require an account
+  * Does not collect or transmit your conversation contents
+  * Does not maintain or persist a copy of your Anthropic OAuth credentials
+  * Reads Claude Code's local files directly
+  * Uses Anthropic's usage endpoint for account-level quota information
 
 The complete source code is included so you can see exactly what it does.
 
