@@ -107,8 +107,6 @@ The monitor can continue displaying account usage even when Claude Code is not a
 ## Privacy
 
 Claude Usage Monitor is designed to keep things local.
-
-Claude Usage Monitor:
   * Does not collect telemetry
   * Does not require an account
   * Does not collect or transmit your conversation contents
