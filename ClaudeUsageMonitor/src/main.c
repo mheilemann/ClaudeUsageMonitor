@@ -1162,7 +1162,7 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
 
     {
         COLORREF caption_color = RGB(20, 20, 22);
-        COLORREF text_color = RGB(160, 225, 255);
+        COLORREF text_color = RGB(90, 200, 255);
         DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color, sizeof(caption_color));
         DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &text_color, sizeof(text_color));
     }
