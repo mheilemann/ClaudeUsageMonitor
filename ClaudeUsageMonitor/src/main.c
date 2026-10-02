@@ -14,8 +14,12 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <winhttp.h>
+#include <shellapi.h>
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "shell32.lib")
+
+#define PAYPAL_URL "https://www.paypal.com/paypalme/MichaelHeilemann420?locale.x=en_US&country.x=US"
 
 #define PATH_CAP 4096
 #define LINE_CAP 65536
@@ -350,6 +354,7 @@ static COLORREF bar_color(double pct) {
 static int g_measuring = 0;
 static int g_max_x = 0;
 static HDC g_measure_dc = NULL;
+static RECT g_paypal_rect = { 0, 0, 0, 0 };
 
 static void draw_bar(HDC hdc, int x, int y, int w, int h, double pct) {
     RECT track = { x, y, x + w, y + h };
@@ -390,6 +395,46 @@ static void text_out(HDC hdc, int x, int y, COLORREF color, HFONT font, const ch
     TextOutA(hdc, x, y, s, (int)strlen(s));
 }
 
+/* Draws a small bordered button with centered text and records its rect for
+   click hit-testing. x,y is the button's top-left; h is its fixed height. */
+static void draw_button(HDC hdc, int x, int y, int h, HFONT font, COLORREF text_color,
+    COLORREF border_color, const char *label, RECT *rect_out) {
+    SIZE sz;
+    HDC measure_on = g_measuring ? g_measure_dc : hdc;
+    const int pad_x = SX(8);
+    int w;
+
+    SelectObject(measure_on, font);
+    GetTextExtentPoint32A(measure_on, label, (int)strlen(label), &sz);
+    w = sz.cx + pad_x * 2;
+
+    if (g_measuring) {
+        if (x + w > g_max_x) g_max_x = x + w;
+        return;
+    }
+
+    {
+        RECT r = { x, y, x + w, y + h };
+        HBRUSH fill = CreateSolidBrush(RGB(28, 40, 46));
+        HPEN pen = CreatePen(PS_SOLID, 1, border_color);
+        HPEN old_pen = (HPEN)SelectObject(hdc, pen);
+        HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+        FillRect(hdc, &r, fill);
+        DeleteObject(fill);
+        Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(pen);
+
+        SetTextColor(hdc, text_color);
+        SetBkMode(hdc, TRANSPARENT);
+        TextOutA(hdc, x + pad_x, y + (h - sz.cy) / 2, label, (int)strlen(label));
+
+        if (rect_out) *rect_out = r;
+    }
+}
+
 static int render(HDC hdc, RECT *client) {
     char buf[256];
     int y = SX(8);
@@ -404,7 +449,21 @@ static int render(HDC hdc, RECT *client) {
         DeleteObject(bg);
     }
 
-    text_out(hdc, left, y, cyan, g_font_title, "CLAUDE USAGE MONITOR");
+    {
+        const char *title = "CLAUDE USAGE MONITOR";
+        HDC measure_on = g_measuring ? g_measure_dc : hdc;
+        SIZE title_sz;
+
+        SelectObject(measure_on, g_font_title);
+        GetTextExtentPoint32A(measure_on, title, (int)strlen(title), &title_sz);
+
+        text_out(hdc, left, y, cyan, g_font_title, title);
+        {
+            int btn_h = (int)(title_sz.cy * 0.50);
+            draw_button(hdc, left + title_sz.cx + SX(14), y + (title_sz.cy - btn_h) / 2, btn_h,
+                g_font_body, cyan, cyan, "Support Me", &g_paypal_rect);
+        }
+    }
     y += SX(20);
     if (!g_measuring) {
         RECT line = { left, y, client->right - left, y + SX(2) };
@@ -633,6 +692,22 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PAINT:
         on_paint(hwnd);
         return 0;
+    case WM_LBUTTONDOWN: {
+        POINT pt = { LOWORD(lp), HIWORD(lp) };
+        if (PtInRect(&g_paypal_rect, pt))
+            ShellExecuteA(NULL, "open", PAYPAL_URL, NULL, NULL, SW_SHOWNORMAL);
+        return 0;
+    }
+    case WM_SETCURSOR: {
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd, &pt);
+        if (PtInRect(&g_paypal_rect, pt)) {
+            SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_HAND));
+            return TRUE;
+        }
+        break;
+    }
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_ID);
         PostQuitMessage(0);
