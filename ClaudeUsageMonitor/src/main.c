@@ -15,10 +15,19 @@
 #include <sys/stat.h>
 #include <winhttp.h>
 #include <shellapi.h>
+#include <dwmapi.h>
 #include "resource.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+#ifndef DWMWA_TEXT_COLOR
+#define DWMWA_TEXT_COLOR 36
+#endif
 
 #define APP_VERSION "1.0.0"
 #define PAYPAL_URL "https://www.paypal.com/paypalme/MichaelHeilemann420?locale.x=en_US&country.x=US"
@@ -1148,6 +1157,13 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
             style, x, y, win_w, win_h, NULL, NULL, hinst, NULL);
     }
     if (!hwnd) return 1;
+
+    {
+        COLORREF caption_color = RGB(20, 20, 22);
+        COLORREF text_color = RGB(90, 200, 255);
+        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color, sizeof(caption_color));
+        DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &text_color, sizeof(text_color));
+    }
 
     ShowWindow(hwnd, show_cmd);
     UpdateWindow(hwnd);
