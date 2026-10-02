@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <winhttp.h>
 #include <shellapi.h>
+#include "resource.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
@@ -460,19 +461,10 @@ static int render(HDC hdc, RECT *client) {
 
         text_out(hdc, left, y, cyan, g_font_title, title);
         {
-            const char *version = "v" APP_VERSION;
-            SIZE ver_sz;
-            int ver_x = left + title_sz.cx + SX(10);
-
-            SelectObject(measure_on, g_font_body);
-            GetTextExtentPoint32A(measure_on, version, (int)strlen(version), &ver_sz);
-            text_out(hdc, ver_x, y + (title_sz.cy - ver_sz.cy) / 2, dim, g_font_body, version);
-
-            {
-                int btn_h = (int)(title_sz.cy * 0.50);
-                draw_button(hdc, ver_x + ver_sz.cx + SX(14), y + (title_sz.cy - btn_h) / 2, btn_h,
-                    g_font_body, cyan, cyan, "Support Me", &g_paypal_rect);
-            }
+            int btn_x = left + title_sz.cx + SX(14);
+            int btn_h = (int)(title_sz.cy * 0.50);
+            draw_button(hdc, btn_x, y + (title_sz.cy - btn_h) / 2, btn_h,
+                g_font_body, cyan, cyan, "Support Me", &g_paypal_rect);
         }
     }
     y += SX(20);
@@ -1135,7 +1127,8 @@ static int run_gui(HINSTANCE hinst, int show_cmd) {
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = hinst;
     wc.hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
-    wc.hIcon = LoadIconA(NULL, (LPCSTR)IDI_APPLICATION);
+    wc.hIcon = LoadIconA(hinst, MAKEINTRESOURCEA(IDI_APPICON));
+    wc.hIconSm = wc.hIcon;
     wc.lpszClassName = "ClaudeUsageMonitorWnd";
     RegisterClassExA(&wc);
 
