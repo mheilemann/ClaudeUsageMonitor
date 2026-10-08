@@ -1,6 +1,6 @@
 # Claude Usage Monitor
 
-**Version 1.0.0**
+**Version 1.1.0**
 
 A tiny, native Windows monitor that shows your Claude Code usage, session tokens, context window, and Anthropic account limits at a glance.
 

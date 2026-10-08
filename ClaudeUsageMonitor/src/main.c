@@ -33,7 +33,7 @@
 #define DWMWA_TEXT_COLOR 36
 #endif
 
-#define APP_VERSION "1.0.0"
+#define APP_VERSION "1.1.0"
 #define PAYPAL_URL "https://www.paypal.com/paypalme/MichaelHeilemann420?locale.x=en_US&country.x=US"
 
 #define PATH_CAP 4096
@@ -54,6 +54,7 @@ typedef struct {
     char model[128];
     char effort[32];
     char session_file[PATH_CAP];
+    char cwd[MAX_PATH];
     time_t modified;
 } SessionStats;
 
@@ -69,6 +70,20 @@ static char g_root[PATH_CAP];
 static SessionStats g_session;
 static RateStats g_rates;
 static int g_have_session;
+
+/* A session counts as "active" if its transcript was written within this window. */
+#define ACTIVE_WINDOW_SECS 300
+#define MAX_ACTIVE 16
+
+typedef struct {
+    char path[PATH_CAP];
+    time_t mtime;
+} SessionRef;
+
+static SessionRef g_active[MAX_ACTIVE];   /* sorted by path so click-cycling is stable */
+static int g_active_count;
+static int g_sel_pos;                     /* 1-based position of the shown session in g_active, 0 if idle */
+static char g_pinned[PATH_CAP];           /* empty = auto-follow the most recently written session */
 
 enum { API_PENDING, API_OK, API_NO_CREDS, API_AUTH, API_NET };
 static volatile LONG g_api_state = API_PENDING;
@@ -259,7 +274,10 @@ static int read_rate_file(RateStats *r) {
     return r->valid;
 }
 
-static int find_latest_jsonl_recursive(const char *dir, char *best, size_t cap, time_t *best_time) {
+/* Walks dir for session transcripts. Tracks the newest file overall (best) and
+   collects every file written within ACTIVE_WINDOW_SECS into g_active.
+   Subagent transcripts are skipped; they belong to a parent session. */
+static int find_sessions_recursive(const char *dir, time_t now, char *best, size_t cap, time_t *best_time) {
     char pattern[PATH_CAP];
     WIN32_FIND_DATAA fd;
     HANDLE h;
@@ -277,15 +295,33 @@ static int find_latest_jsonl_recursive(const char *dir, char *best, size_t cap, 
         snprintf(path, sizeof(path), "%s\\%s", dir, fd.cFileName);
 
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (find_latest_jsonl_recursive(path, best, cap, best_time)) found = 1;
+            if (!_stricmp(fd.cFileName, "subagents")) continue;
+            if (find_sessions_recursive(path, now, best, cap, best_time)) found = 1;
         } else {
             const char *ext = strrchr(fd.cFileName, '.');
-            if (ext && !_stricmp(ext, ".jsonl")) {
-                if (_stat(path, &st) == 0 && st.st_mtime >= *best_time) {
+            if (ext && !_stricmp(ext, ".jsonl") && _strnicmp(fd.cFileName, "agent-", 6) != 0 &&
+                _stat(path, &st) == 0) {
+                if (st.st_mtime >= *best_time) {
                     *best_time = st.st_mtime;
                     strncpy(best, path, cap - 1);
                     best[cap - 1] = '\0';
                     found = 1;
+                }
+                if (now - st.st_mtime <= ACTIVE_WINDOW_SECS) {
+                    int slot = -1;
+                    if (g_active_count < MAX_ACTIVE) {
+                        slot = g_active_count++;
+                    } else {
+                        int i, oldest = 0;
+                        for (i = 1; i < MAX_ACTIVE; ++i)
+                            if (g_active[i].mtime < g_active[oldest].mtime) oldest = i;
+                        if (g_active[oldest].mtime < st.st_mtime) slot = oldest;
+                    }
+                    if (slot >= 0) {
+                        strncpy(g_active[slot].path, path, PATH_CAP - 1);
+                        g_active[slot].path[PATH_CAP - 1] = '\0';
+                        g_active[slot].mtime = st.st_mtime;
+                    }
                 }
             }
         }
@@ -293,6 +329,51 @@ static int find_latest_jsonl_recursive(const char *dir, char *best, size_t cap, 
 
     FindClose(h);
     return found;
+}
+
+static int compare_session_path(const void *a, const void *b) {
+    return _stricmp(((const SessionRef*)a)->path, ((const SessionRef*)b)->path);
+}
+
+#define LABEL_MAX 48
+
+/* Label is the session's working directory (from its transcript), falling back to
+   the project folder name under <root>. Keeps the tail if it is too long. */
+static void session_label(const SessionStats *s, char *out, size_t cap) {
+    const char *text = s->cwd;
+    size_t n;
+
+    if (!text[0]) {
+        const char *file = strrchr(s->session_file, '\\');
+        if (!file) { snprintf(out, cap, "%s", s->session_file); return; }
+        text = file;
+        while (text > s->session_file && text[-1] != '\\') --text;
+        n = (size_t)(file - text);
+    } else {
+        n = strlen(text);
+    }
+    if (n > LABEL_MAX)
+        snprintf(out, cap, "...%.*s", LABEL_MAX - 3, text + n - (LABEL_MAX - 3));
+    else
+        snprintf(out, cap, "%.*s", (int)n, text);
+}
+
+/* Click handler: auto -> pin next session -> ... -> last session -> back to auto. */
+static void cycle_session(void) {
+    int i, idx = -1;
+    if (g_active_count < 2) return;
+    if (g_pinned[0]) {
+        for (i = 0; i < g_active_count; ++i)
+            if (!_stricmp(g_active[i].path, g_pinned)) { idx = i; break; }
+        if (idx >= 0 && idx + 1 < g_active_count) {
+            strcpy(g_pinned, g_active[idx + 1].path);
+        } else {
+            g_pinned[0] = '\0';
+        }
+    } else {
+        int next = g_sel_pos % g_active_count;   /* g_sel_pos is 1-based, so this is the one after it */
+        strcpy(g_pinned, g_active[next].path);
+    }
 }
 
 static int scan_session(const char *path, SessionStats *s) {
@@ -312,6 +393,15 @@ static int scan_session(const char *path, SessionStats *s) {
     if (!line) { fclose(f); return 0; }
 
     while (fgets(line, (int)cap, f)) {
+        if (!s->cwd[0] && (p = strstr(line, "\"cwd\":\"")) != NULL) {
+            /* JSON-escaped path: collapse "\\" to "\" */
+            char *o = s->cwd;
+            for (p += 7; *p && *p != '"' && o < s->cwd + sizeof(s->cwd) - 1; ++p) {
+                if (*p == '\\' && p[1] == '\\') ++p;
+                *o++ = *p;
+            }
+            *o = '\0';
+        }
         if (!strstr(line, "\"type\":\"assistant\"") &&
             !strstr(line, "\"type\": \"assistant\""))
             continue;
@@ -354,9 +444,32 @@ static void refresh_data(void) {
     if (read_rate_file(&rates)) g_rates = rates;
 
     latest[0] = '\0';
-    if (!find_latest_jsonl_recursive(g_root, latest, sizeof(latest), &latest_time)) {
+    g_active_count = 0;
+    if (!find_sessions_recursive(g_root, time(NULL), latest, sizeof(latest), &latest_time)) {
         g_have_session = 0;
+        g_sel_pos = 0;
         return;
+    }
+    qsort(g_active, (size_t)g_active_count, sizeof(g_active[0]), compare_session_path);
+
+    g_sel_pos = 0;
+    if (g_active_count > 0) {
+        int i, pick = -1;
+        if (g_pinned[0]) {
+            for (i = 0; i < g_active_count; ++i)
+                if (!_stricmp(g_active[i].path, g_pinned)) { pick = i; break; }
+            if (pick < 0) g_pinned[0] = '\0';   /* pinned session went idle: resume auto-follow */
+        }
+        if (pick < 0) {
+            pick = 0;
+            for (i = 1; i < g_active_count; ++i)
+                if (g_active[i].mtime > g_active[pick].mtime) pick = i;
+        }
+        g_sel_pos = pick + 1;
+        strncpy(latest, g_active[pick].path, sizeof(latest) - 1);
+        latest[sizeof(latest) - 1] = '\0';
+    } else {
+        g_pinned[0] = '\0';   /* nothing active: fall back to the newest transcript on disk */
     }
     if (!scan_session(latest, &g_session)) {
         g_have_session = 0;
@@ -379,6 +492,7 @@ static HDC g_measure_dc = NULL;
 static RECT g_paypal_rect = { 0, 0, 0, 0 };
 static RECT g_five_rect = { 0, 0, 0, 0 };
 static RECT g_seven_rect = { 0, 0, 0, 0 };
+static RECT g_session_rect = { 0, 0, 0, 0 };
 static int g_show_abs_five = 0;
 static int g_show_abs_seven = 0;
 
@@ -525,6 +639,7 @@ static int render(HDC hdc, RECT *client) {
     y += SX(4);
 
     if (!g_have_session) {
+        SetRectEmpty(&g_session_rect);
         text_out(hdc, left, y, white, g_font_body, "No Claude Code sessions found under:");
         y += SX(16);
         text_out(hdc, left, y, dim, g_font_body, g_root);
@@ -533,6 +648,29 @@ static int render(HDC hdc, RECT *client) {
         y += SX(16);
         text_out(hdc, left, y, white, g_font_body, "this window will update automatically.");
         return y;
+    }
+
+    {
+        char label[160], head[96];
+        int row_y = y;
+
+        if (g_active_count == 0)
+            snprintf(head, sizeof(head), "SESSION (idle)");
+        else if (g_active_count == 1)
+            snprintf(head, sizeof(head), "SESSION (1 active)");
+        else
+            snprintf(head, sizeof(head), "SESSION %d/%d active (%s)",
+                g_sel_pos, g_active_count, g_pinned[0] ? "pinned" : "auto");
+        text_out(hdc, left, y, cyan, g_font_header, head);
+        y += SX(17);
+        session_label(&g_session, label, sizeof(label));
+        text_out(hdc, left + SX(8), y, dim, g_font_body, label);
+        y += SX(20);
+        if (!g_measuring) {
+            RECT r = { left, row_y, client->right, y };
+            if (g_active_count > 1) g_session_rect = r;
+            else SetRectEmpty(&g_session_rect);
+        }
     }
 
     if (g_session.effort[0])
@@ -684,10 +822,18 @@ static void measure_window_size(int *out_w, int *out_h) {
     SessionStats saved_session = g_session;
     RateStats saved_rates = g_rates;
     int saved_have_session = g_have_session;
+    int saved_active_count = g_active_count;
+    int saved_sel_pos = g_sel_pos;
+    char saved_pinned[PATH_CAP];
     time_t now = time(NULL);
 
+    strcpy(saved_pinned, g_pinned);
     g_have_session = 1;
+    g_active_count = 16;
+    g_sel_pos = 16;
+    strcpy(g_pinned, "x");
     memset(&g_session, 0, sizeof(g_session));
+    memset(g_session.cwd, 'W', LABEL_MAX);
     strncpy(g_session.model, "claude-sonnet-4-5-20250929", sizeof(g_session.model) - 1);
     strncpy(g_session.effort, "medium", sizeof(g_session.effort) - 1);
     g_session.requests = 9999;
@@ -711,6 +857,9 @@ static void measure_window_size(int *out_w, int *out_h) {
     g_session = saved_session;
     g_rates = saved_rates;
     g_have_session = saved_have_session;
+    g_active_count = saved_active_count;
+    g_sel_pos = saved_sel_pos;
+    strcpy(g_pinned, saved_pinned);
 
     *out_w = (int)((g_max_x + left + SX(16)) * 0.9);
     *out_h = (int)((final_y + SX(10)) * 0.95);
@@ -764,7 +913,11 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt = { LOWORD(lp), HIWORD(lp) };
         if (PtInRect(&g_paypal_rect, pt))
             ShellExecuteA(NULL, "open", PAYPAL_URL, NULL, NULL, SW_SHOWNORMAL);
-        else if (PtInRect(&g_five_rect, pt)) {
+        else if (PtInRect(&g_session_rect, pt)) {
+            cycle_session();
+            refresh_data();
+            InvalidateRect(hwnd, NULL, FALSE);
+        } else if (PtInRect(&g_five_rect, pt)) {
             g_show_abs_five = !g_show_abs_five;
             save_time_settings();
             InvalidateRect(hwnd, NULL, FALSE);
@@ -779,7 +932,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         POINT pt;
         GetCursorPos(&pt);
         ScreenToClient(hwnd, &pt);
-        if (PtInRect(&g_paypal_rect, pt) || PtInRect(&g_five_rect, pt) || PtInRect(&g_seven_rect, pt)) {
+        if (PtInRect(&g_paypal_rect, pt) || PtInRect(&g_five_rect, pt) || PtInRect(&g_seven_rect, pt) ||
+            PtInRect(&g_session_rect, pt)) {
             SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_HAND));
             return TRUE;
         }
