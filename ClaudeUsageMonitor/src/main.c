@@ -605,6 +605,7 @@ static void draw_button(HDC hdc, int x, int y, int h, HFONT font, COLORREF text_
 static int render(HDC hdc, RECT *client) {
     char buf[256];
     int y = SX(8);
+    int btn_bottom;
     const int left = SX(12);
     const COLORREF white = RGB(230, 230, 230);
     const COLORREF dim = RGB(150, 150, 150);
@@ -618,12 +619,14 @@ static int render(HDC hdc, RECT *client) {
 
     {
         HDC measure_on = g_measuring ? g_measure_dc : hdc;
-        SIZE title_sz, btn_sz;
+        SIZE title_sz, btn_sz, head_sz;
         const int pad_x = SX(8);
-        int btn_h, btn_w, btn_x;
+        int btn_h, btn_w, btn_x, btn_y;
 
         SelectObject(measure_on, g_font_title);
         GetTextExtentPoint32A(measure_on, "M", 1, &title_sz);
+        SelectObject(measure_on, g_font_header);
+        GetTextExtentPoint32A(measure_on, "M", 1, &head_sz);
 
         SelectObject(measure_on, g_font_body);
         GetTextExtentPoint32A(measure_on, "Support the App", (int)strlen("Support the App"), &btn_sz);
@@ -631,15 +634,18 @@ static int render(HDC hdc, RECT *client) {
         btn_h = (int)(title_sz.cy * 0.50);
         btn_x = g_measuring ? left : client->right - left - btn_w;
 
-        draw_button(hdc, btn_x, y, btn_h,
+        /* Vertically centre the button on the first text row (the SESSION header). */
+        btn_y = y + (head_sz.cy - btn_h) / 2;
+        if (btn_y < y) btn_y = y;
+        draw_button(hdc, btn_x, btn_y, btn_h,
             g_font_body, cyan, cyan, "Support the App", &g_paypal_rect);
 
-        y += btn_h;
+        btn_bottom = btn_y + btn_h;
     }
-    y += SX(4);
 
     if (!g_have_session) {
         SetRectEmpty(&g_session_rect);
+        y = btn_bottom + SX(4);
         text_out(hdc, left, y, white, g_font_body, "No Claude Code sessions found under:");
         y += SX(16);
         text_out(hdc, left, y, dim, g_font_body, g_root);
